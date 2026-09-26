@@ -260,6 +260,70 @@ nix_direnv_manual_reload() {
   _nix_direnv_manual_reload=1
 }
 
+: "${_nix_direnv_watch_content:=0}"
+nix_direnv_watch_content() {
+  _nix_direnv_watch_content=1
+}
+
+# Print "<sha256>  <path>" for each argument that is a regular file.
+_nix_direnv_hash_files() {
+  local file out
+  for file in "$@"; do
+    # One line per file; a path containing a newline is left to the mtime check.
+    if [[ ! -f $file || $file == *$'\n'* ]]; then
+      continue
+    fi
+    if has sha256sum; then
+      out=$(sha256sum <"$file") || return 1
+    elif has shasum; then
+      out=$(shasum -a 256 <"$file") || return 1
+    else
+      return 1
+    fi
+    printf "%s  %s\n" "${out%% *}" "$file"
+  done
+}
+
+# Remove files from the array named by $1 whose content still matches the hash
+# recorded in $2 when the cache was built. Files without a recorded hash, or
+# that can't be hashed, are kept.
+_nix_direnv_drop_unchanged() {
+  local -n _files=$1
+  local hashes_file=$2
+  if [[ ! -f $hashes_file ]]; then
+    return 0
+  fi
+
+  local -A recorded=()
+  local line
+  while IFS= read -r line; do
+    recorded[${line#*  }]=${line%%  *}
+  done <"$hashes_file"
+
+  local file current kept=()
+  for file in "${_files[@]}"; do
+    current=$(_nix_direnv_hash_files "$file") || current=
+    if [[ -z $current || ${recorded[$file]-} != "${current%%  *}" ]]; then
+      kept+=("$file")
+    fi
+  done
+
+  if [[ ${#kept[@]} -lt ${#_files[@]} ]]; then
+    _nix_direnv_info "$((${#_files[@]} - ${#kept[@]})) watched file(s) newer than cache but unchanged"
+  fi
+  _files=("${kept[@]}")
+}
+
+# Record watched file hashes for the cache just built, or remove a stale record.
+_nix_direnv_write_hashes() {
+  local hashes=$1 hashes_file=$2
+  if [[ -n $hashes ]]; then
+    printf "%s\n" "$hashes" >"$hashes_file"
+  else
+    rm -f "$hashes_file"
+  fi
+}
+
 : "${_nix_direnv_allow_fallback:=1}"
 nix_direnv_disallow_fallback() {
   _nix_direnv_info "Fallback disallowed"
@@ -332,6 +396,18 @@ use_flake() {
     fi
   done
 
+  local watch_hashes=""
+  if [[ $_nix_direnv_watch_content -eq 1 ]]; then
+    if [[ ${#newer_files[@]} -gt 0 && -z ${_nix_direnv_force_reload-} ]]; then
+      _nix_direnv_drop_unchanged newer_files "${profile_rc}.hashes"
+    fi
+    # Hash before evaluating, so a file edited mid-evaluation is not recorded
+    # with content the cache wasn't built from.
+    if [[ $profile_missing -eq 1 || $profile_rc_missing -eq 1 || ${#newer_files[@]} -gt 0 ]]; then
+      watch_hashes=$(_nix_direnv_hash_files "${watches[@]}") || watch_hashes=""
+    fi
+  fi
+
   if [[ ${#newer_files[@]} -gt 0 ]]; then
     local new_file_list
     new_file_list="$(printf "  %s\n" "${newer_files[@]:0:5}")"
@@ -356,6 +432,7 @@ use_flake() {
 
         # We need to update our cache
         echo "$tmp_profile_rc" >"$profile_rc"
+        _nix_direnv_write_hashes "$watch_hashes" "${profile_rc}.hashes"
         _nix_add_gcroot "$tmp_profile" "$profile"
         rm -f "$tmp_profile" "$tmp_profile"*
 
@@ -531,6 +608,18 @@ use_nix() {
     fi
   done
 
+  local watch_hashes=""
+  if [[ $_nix_direnv_watch_content -eq 1 ]]; then
+    if [[ ${#newer_files[@]} -gt 0 && -z ${_nix_direnv_force_reload-} ]]; then
+      _nix_direnv_drop_unchanged newer_files "${profile_rc}.hashes"
+    fi
+    # Hash before evaluating, so a file edited mid-evaluation is not recorded
+    # with content the cache wasn't built from.
+    if [[ $profile_missing -eq 1 || $profile_rc_missing -eq 1 || ${#newer_files[@]} -gt 0 ]]; then
+      watch_hashes=$(_nix_direnv_hash_files "${watches[@]}") || watch_hashes=""
+    fi
+  fi
+
   if [[ ${#newer_files[@]} -gt 0 ]]; then
     local new_file_list
     new_file_list="$(printf "  %s\n" "${newer_files[@]:0:5}")"
@@ -570,6 +659,7 @@ use_nix() {
         _nix_clean_old_gcroots "$layout_dir"
 
         echo "$tmp_profile_rc" >"$profile_rc"
+        _nix_direnv_write_hashes "$watch_hashes" "${profile_rc}.hashes"
         _nix_add_gcroot "$tmp_profile" "$profile"
         rm -f "$tmp_profile" "$tmp_profile"*
         _nix_direnv_info "Renewed cache"

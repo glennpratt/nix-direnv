@@ -284,6 +284,25 @@ To reload your nix environment, use the `nix-direnv-reload` command:
 nix-direnv-reload
 ```
 
+##### Rebuilding only when watched files change content
+
+By default, nix-direnv rebuilds its cache whenever a tracked file is newer than
+the cache, even if its content is the same. Switching git branches back and
+forth, or a tool rewriting a file unchanged, then costs a full re-evaluation.
+
+To rebuild only when the content of a tracked file actually changed, use
+`nix_direnv_watch_content` in your `.envrc`:
+
+```shell
+nix_direnv_watch_content
+use nix # or use flake
+```
+
+nix-direnv then records a SHA-256 hash of each tracked file when it builds the
+cache, and on later loads skips files whose hash is unchanged. Files are only
+hashed when they look newer than the cache, so an up-to-date cache costs
+nothing extra. `nix-direnv-reload` still forces a rebuild.
+
 ##### Known arguments
 
 - `-p`: Starts a list of packages to install; consumes all remaining arguments
