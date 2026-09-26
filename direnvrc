@@ -316,11 +316,22 @@ _nix_direnv_drop_unchanged() {
 
 # Record watched file hashes for the cache just built, or remove a stale record.
 _nix_direnv_write_hashes() {
-  local hashes=$1 hashes_file=$2
+  local hashes=$1 hashes_file=$2 checked_at=$3
   if [[ -n $hashes ]]; then
     printf "%s\n" "$hashes" >"$hashes_file"
+    _nix_direnv_mark_checked "$hashes_file" "$checked_at"
   else
     rm -f "$hashes_file"
+  fi
+}
+
+# Set the hashes file's mtime to just before the watched files were checked, so
+# a file changed after that (even mid-evaluation) is newer and gets re-checked.
+# The hashes file isn't watched by direnv, so this doesn't trigger reloads.
+_nix_direnv_mark_checked() {
+  local hashes_file=$1 checked_at=$2
+  if [[ -n $checked_at ]]; then
+    touch -d "@$((checked_at - 1))" "$hashes_file" 2>/dev/null || true
   fi
 }
 
@@ -388,10 +399,20 @@ use_flake() {
     profile_rc_missing=1
   fi
 
+  # With content watching, the hashes file's mtime marks when the watched files
+  # were last known to match the cache.
+  local hashes_file="${profile_rc}.hashes" mtime_ref=$profile_rc checked_at=""
+  if [[ $_nix_direnv_watch_content -eq 1 ]]; then
+    checked_at=$(date +%s)
+    if [[ -f $hashes_file ]]; then
+      mtime_ref=$hashes_file
+    fi
+  fi
+
   local file=
   local newer_files=()
   for file in "${watches[@]}"; do
-    if [[ $file -nt $profile_rc ]]; then
+    if [[ $file -nt $mtime_ref ]]; then
       newer_files+=("$file")
     fi
   done
@@ -399,7 +420,10 @@ use_flake() {
   local watch_hashes=""
   if [[ $_nix_direnv_watch_content -eq 1 ]]; then
     if [[ ${#newer_files[@]} -gt 0 && -z ${_nix_direnv_force_reload-} ]]; then
-      _nix_direnv_drop_unchanged newer_files "${profile_rc}.hashes"
+      _nix_direnv_drop_unchanged newer_files "$hashes_file"
+      if [[ ${#newer_files[@]} -eq 0 ]]; then
+        _nix_direnv_mark_checked "$hashes_file" "$checked_at"
+      fi
     fi
     # Hash before evaluating, so a file edited mid-evaluation is not recorded
     # with content the cache wasn't built from.
@@ -432,7 +456,7 @@ use_flake() {
 
         # We need to update our cache
         echo "$tmp_profile_rc" >"$profile_rc"
-        _nix_direnv_write_hashes "$watch_hashes" "${profile_rc}.hashes"
+        _nix_direnv_write_hashes "$watch_hashes" "$hashes_file" "$checked_at"
         _nix_add_gcroot "$tmp_profile" "$profile"
         rm -f "$tmp_profile" "$tmp_profile"*
 
@@ -600,10 +624,20 @@ use_nix() {
     profile_rc_missing=1
   fi
 
+  # With content watching, the hashes file's mtime marks when the watched files
+  # were last known to match the cache.
+  local hashes_file="${profile_rc}.hashes" mtime_ref=$profile_rc checked_at=""
+  if [[ $_nix_direnv_watch_content -eq 1 ]]; then
+    checked_at=$(date +%s)
+    if [[ -f $hashes_file ]]; then
+      mtime_ref=$hashes_file
+    fi
+  fi
+
   local file=
   local newer_files=()
   for file in "${watches[@]}"; do
-    if [[ $file -nt $profile_rc ]]; then
+    if [[ $file -nt $mtime_ref ]]; then
       newer_files+=("$file")
     fi
   done
@@ -611,7 +645,10 @@ use_nix() {
   local watch_hashes=""
   if [[ $_nix_direnv_watch_content -eq 1 ]]; then
     if [[ ${#newer_files[@]} -gt 0 && -z ${_nix_direnv_force_reload-} ]]; then
-      _nix_direnv_drop_unchanged newer_files "${profile_rc}.hashes"
+      _nix_direnv_drop_unchanged newer_files "$hashes_file"
+      if [[ ${#newer_files[@]} -eq 0 ]]; then
+        _nix_direnv_mark_checked "$hashes_file" "$checked_at"
+      fi
     fi
     # Hash before evaluating, so a file edited mid-evaluation is not recorded
     # with content the cache wasn't built from.
@@ -659,7 +696,7 @@ use_nix() {
         _nix_clean_old_gcroots "$layout_dir"
 
         echo "$tmp_profile_rc" >"$profile_rc"
-        _nix_direnv_write_hashes "$watch_hashes" "${profile_rc}.hashes"
+        _nix_direnv_write_hashes "$watch_hashes" "$hashes_file" "$checked_at"
         _nix_add_gcroot "$tmp_profile" "$profile"
         rm -f "$tmp_profile" "$tmp_profile"*
         _nix_direnv_info "Renewed cache"

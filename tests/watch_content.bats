@@ -10,9 +10,11 @@ function teardown {
   _common_teardown
 }
 
-# Make a file look newer than the cache without changing its content.
+# Make a file look newer than the cache without changing its content. Checks
+# are recorded with one-second resolution, so step past the last one.
 function bump_mtime {
-  touch -d "@$(($(date +%s) + 60))" "$1"
+  sleep 2
+  touch -d "@$(($(date +%s) - 1))" "$1"
 }
 
 function load_env {
@@ -29,6 +31,11 @@ function assert_content_watch {
   bump_mtime "$watched"
   load_env
   assert_stderr -p "newer than cache but unchanged"
+  assert_stderr -p "Using cached dev shell"
+
+  # Once confirmed unchanged, the file isn't re-checked on every load.
+  load_env
+  refute_stderr -p "newer than cache but unchanged"
   assert_stderr -p "Using cached dev shell"
 
   echo "# changed" >>"$watched"

@@ -300,8 +300,9 @@ use nix # or use flake
 
 nix-direnv then records a SHA-256 hash of each tracked file when it builds the
 cache, and on later loads skips files whose hash is unchanged. Files are only
-hashed when they look newer than the cache, so an up-to-date cache costs
-nothing extra. `nix-direnv-reload` still forces a rebuild.
+hashed when they look newer than the last check, so an up-to-date cache costs
+nothing extra, and a file confirmed unchanged is not hashed again.
+`nix-direnv-reload` still forces a rebuild.
 
 ##### Known arguments
 
